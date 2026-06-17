@@ -8,7 +8,14 @@ const LINE_TOKEN = process.env.LINE_TOKEN;
 const SHEET_ID   = process.env.SHEET_ID;
 const FACTORY    = process.env.FACTORY_NAME || "โรงงาน";
 
-// Google Sheets Auth — รองรับทั้ง JSON string และ base64
+const COL = {
+  NAME: 2, TYPE: 3, UNIT: 4, STOCK: 5,
+  REORDER: 6, ORDER_QTY: 7,
+  SUPPLIER_A: 8, SUPPLIER_B: 9,
+  ROTATE: 10, LAST_QUEUE: 11,
+  STATUS: 12  // คอลัมน์ L — สถานะ
+};
+
 async function getSheets() {
   let creds;
   const raw = process.env.GOOGLE_CREDENTIALS;
@@ -34,14 +41,30 @@ async function sendLine(groupId, message) {
     const res = await axios.post('https://api.line.me/v2/bot/message/push', {
       to: groupId,
       messages: [{ type: 'text', text: message }]
-    }, {
-      headers: { 'Authorization': `Bearer ${LINE_TOKEN}` }
-    });
+    }, { headers: { 'Authorization': `Bearer ${LINE_TOKEN}` } });
     return res.status;
   } catch(e) {
     console.error('sendLine error:', e.response?.data || e.message);
     return 0;
   }
+}
+
+async function getFactoryGroupId(sheets) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: 'ตั้งค่า_Line_Bot!B3',
+  });
+  return (res.data.values || [['']])[0][0];
+}
+
+async function updateRow(sheets, rowIndex, queue, status) {
+  // อัพเดท Last Queue (K) และ Status (L) พร้อมกัน
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `Stock_วัตถุดิบ!K${rowIndex}:L${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[queue, status]] }
+  });
 }
 
 async function logHistory(sheets, row) {
@@ -53,48 +76,49 @@ async function logHistory(sheets, row) {
   });
 }
 
-async function updateQueue(sheets, rowIndex, queue) {
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SHEET_ID,
-    range: `Stock_วัตถุดิบ!K${rowIndex}`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [[queue]] }
-  });
-}
-
-async function getFactoryGroupId(sheets) {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: 'ตั้งค่า_Line_Bot!B3',
-  });
-  return (res.data.values || [['']])[0][0];
-}
-
 async function checkAllStock() {
   const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: 'Stock_วัตถุดิบ!A5:K100',
+    range: 'Stock_วัตถุดิบ!A5:L100',
   });
 
   const rows = res.data.values || [];
   const now = new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
   let ordered = 0;
+  let skipped = 0;
 
   for (let i = 0; i < rows.length; i++) {
     const row      = rows[i];
-    const name     = row[1] || '';
-    const unit     = row[3] || '';
-    const stock    = parseFloat(row[4]) || 0;
-    const reorder  = parseFloat(row[5]) || 0;
-    const orderQty = parseFloat(row[6]) || 0;
-    const supA     = row[7] || '';
-    const supB     = row[8] || '';
-    const rotate   = (row[9] || 'NO').toUpperCase() === 'YES';
-    const lastQ    = (row[10] || 'B').toUpperCase();
+    const name     = row[COL.NAME - 1] || '';
+    const unit     = row[COL.UNIT - 1] || '';
+    const stock    = parseFloat(row[COL.STOCK - 1]) || 0;
+    const reorder  = parseFloat(row[COL.REORDER - 1]) || 0;
+    const orderQty = parseFloat(row[COL.ORDER_QTY - 1]) || 0;
+    const supA     = row[COL.SUPPLIER_A - 1] || '';
+    const supB     = row[COL.SUPPLIER_B - 1] || '';
+    const rotate   = (row[COL.ROTATE - 1] || 'NO').toUpperCase() === 'YES';
+    const lastQ    = (row[COL.LAST_QUEUE - 1] || 'B').toUpperCase();
+    const status   = (row[COL.STATUS - 1] || '').toString();
 
-    if (!name || stock > reorder) continue;
+    if (!name) continue;
 
+    const actualRow = i + 5;
+
+    // ถ้า Stock กลับมาสูงกว่า Reorder Point → รีเซ็ตสถานะ
+    if (stock > reorder && status === '⏳ รอของ') {
+      await updateRow(sheets, actualRow, lastQ, '✅ ปกติ');
+      continue;
+    }
+
+    // ข้ามถ้า Stock ปกติ หรือกำลังรอของอยู่แล้ว
+    if (stock > reorder) continue;
+    if (status === '⏳ รอของ') {
+      skipped++;
+      continue;
+    }
+
+    // เลือกซัพพลายเออร์
     let targetQueue = 'A';
     let targetSup   = supA;
     if (rotate && supB) {
@@ -123,11 +147,13 @@ async function checkAllStock() {
 
     const code = await sendLine(supGroupId, orderMsg);
     if (code === 200) {
-      await updateQueue(sheets, i + 5, targetQueue);
+      // อัพเดทสถานะเป็น "รอของ" อัตโนมัติ
+      await updateRow(sheets, actualRow, targetQueue, '⏳ รอของ');
+
       const factoryGroupId = await getFactoryGroupId(sheets);
       if (factoryGroupId) {
         await sendLine(factoryGroupId,
-          `🤖 Bot สั่งซื้อแล้ว\n▪️ ${name} : ${orderQty} ${unit}\n▪️ จาก : ${supName} (คิว ${targetQueue})\n🕐 ${now}`
+          `🤖 Bot สั่งซื้อแล้ว\n▪️ ${name} : ${orderQty} ${unit}\n▪️ จาก : ${supName} (คิว ${targetQueue})\n⏳ รอรับของ\n🕐 ${now}`
         );
       }
       await logHistory(sheets, [now, name, orderQty, unit, supName, targetQueue, '✅ ส่งแล้ว']);
@@ -135,13 +161,12 @@ async function checkAllStock() {
     }
     await new Promise(r => setTimeout(r, 500));
   }
-  return ordered;
+  return { ordered, skipped };
 }
 
 // Routes
 app.get('/', (req, res) => res.json({ status: 'Stock Bot running ✅' }));
 
-// Debug — เช็ค env variables
 app.get('/debug', (req, res) => {
   res.json({
     LINE_TOKEN: LINE_TOKEN ? `✅ (${LINE_TOKEN.length} chars)` : '❌ missing',
@@ -173,8 +198,8 @@ app.post('/webhook', async (req, res) => {
 
 app.get('/check', async (req, res) => {
   try {
-    const ordered = await checkAllStock();
-    res.json({ status: 'ok', ordered });
+    const result = await checkAllStock();
+    res.json({ status: 'ok', ...result });
   } catch(e) {
     console.error(e);
     res.status(500).json({ error: e.message });
