@@ -8,16 +8,27 @@ const LINE_TOKEN = process.env.LINE_TOKEN;
 const SHEET_ID   = process.env.SHEET_ID;
 const FACTORY    = process.env.FACTORY_NAME || "โรงงาน";
 
-// Google Sheets Auth
+// Google Sheets Auth — รองรับทั้ง JSON string และ base64
 async function getSheets() {
+  let creds;
+  const raw = process.env.GOOGLE_CREDENTIALS;
+  if (!raw) throw new Error("GOOGLE_CREDENTIALS is not set");
+  try {
+    creds = JSON.parse(raw);
+  } catch(e) {
+    try {
+      creds = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
+    } catch(e2) {
+      throw new Error("GOOGLE_CREDENTIALS is invalid: " + e2.message);
+    }
+  }
   const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+    credentials: creds,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
   return google.sheets({ version: 'v4', auth });
 }
 
-// ส่ง Line
 async function sendLine(groupId, message) {
   try {
     const res = await axios.post('https://api.line.me/v2/bot/message/push', {
@@ -33,7 +44,6 @@ async function sendLine(groupId, message) {
   }
 }
 
-// บันทึกประวัติ
 async function logHistory(sheets, row) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
@@ -43,7 +53,6 @@ async function logHistory(sheets, row) {
   });
 }
 
-// อัพเดท Last Queue ใน Sheet
 async function updateQueue(sheets, rowIndex, queue) {
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
@@ -53,7 +62,14 @@ async function updateQueue(sheets, rowIndex, queue) {
   });
 }
 
-// ตรวจ Stock ทั้งหมด
+async function getFactoryGroupId(sheets) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: 'ตั้งค่า_Line_Bot!B3',
+  });
+  return (res.data.values || [['']])[0][0];
+}
+
 async function checkAllStock() {
   const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
@@ -87,7 +103,6 @@ async function checkAllStock() {
     }
 
     if (!targetSup) continue;
-
     const parts      = targetSup.split('|');
     const supName    = parts[0].trim();
     const supGroupId = parts[1] ? parts[1].trim() : '';
@@ -109,15 +124,12 @@ async function checkAllStock() {
     const code = await sendLine(supGroupId, orderMsg);
     if (code === 200) {
       await updateQueue(sheets, i + 5, targetQueue);
-
-      // แจ้งกลุ่มโรงงาน
       const factoryGroupId = await getFactoryGroupId(sheets);
       if (factoryGroupId) {
         await sendLine(factoryGroupId,
           `🤖 Bot สั่งซื้อแล้ว\n▪️ ${name} : ${orderQty} ${unit}\n▪️ จาก : ${supName} (คิว ${targetQueue})\n🕐 ${now}`
         );
       }
-
       await logHistory(sheets, [now, name, orderQty, unit, supName, targetQueue, '✅ ส่งแล้ว']);
       ordered++;
     }
@@ -126,32 +138,27 @@ async function checkAllStock() {
   return ordered;
 }
 
-async function getFactoryGroupId(sheets) {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: 'ตั้งค่า_Line_Bot!B3',
-  });
-  return (res.data.values || [['']])[0][0];
-}
-
-// ============================================================
-//  Routes
-// ============================================================
-
-// Health check
+// Routes
 app.get('/', (req, res) => res.json({ status: 'Stock Bot running ✅' }));
 
-// Line Webhook — รับข้อความจากกลุ่ม (ดึง Group ID อัตโนมัติ)
+// Debug — เช็ค env variables
+app.get('/debug', (req, res) => {
+  res.json({
+    LINE_TOKEN: LINE_TOKEN ? `✅ (${LINE_TOKEN.length} chars)` : '❌ missing',
+    SHEET_ID: SHEET_ID ? `✅ ${SHEET_ID}` : '❌ missing',
+    GOOGLE_CREDENTIALS: process.env.GOOGLE_CREDENTIALS ? `✅ (${process.env.GOOGLE_CREDENTIALS.length} chars)` : '❌ missing',
+    FACTORY_NAME: FACTORY,
+  });
+});
+
 app.post('/webhook', async (req, res) => {
-  res.status(200).json({ status: 'ok' }); // ตอบ 200 ทันที
+  res.status(200).json({ status: 'ok' });
   try {
     const events = req.body.events || [];
     for (const event of events) {
       if (event.source && event.source.type === 'group') {
         const groupId = event.source.groupId;
         const text    = event.message?.text || '';
-
-        // พิมพ์ "group id" ในกลุ่ม → Bot ตอบ Group ID กลับ
         if (text.toLowerCase().includes('group id')) {
           await sendLine(groupId,
             `📋 Group ID ของกลุ่มนี้:\n${groupId}\n\nคัดลอกไปวางใน Sheet ได้เลยครับ`
@@ -164,7 +171,6 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Manual trigger — เรียกจาก browser เพื่อตรวจ Stock
 app.get('/check', async (req, res) => {
   try {
     const ordered = await checkAllStock();
