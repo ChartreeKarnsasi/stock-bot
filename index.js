@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const { google } = require('googleapis');
+const cron = require('node-cron');
 const app = express();
 app.use(express.json());
 
@@ -208,3 +209,14 @@ app.get('/check', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Stock Bot running on port ${PORT}`));
+
+// ตรวจ Stock อัตโนมัติทุกเช้า 8 โมง (เวลาไทย)
+cron.schedule('0 1 * * *', async () => {
+  console.log('Auto check stock...');
+  try {
+    const result = await checkAllStock();
+    console.log('Auto check done:', result);
+  } catch(e) {
+    console.error('Auto check error:', e.message);
+  }
+}, { timezone: 'Asia/Bangkok' });
