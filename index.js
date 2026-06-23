@@ -16,7 +16,7 @@ const C = {
   T2_LEVEL:7, T2_QTY:8,
   T3_LEVEL:9, T3_QTY:10,
   SUP_A:11, SUP_B:12,
-  ROTATE:13, LAST_Q:14, STATUS:15
+  ROTATE:13, LAST_Q:14, STATUS:15, PREV_STOCK:16
 };
 
 async function getSheets() {
@@ -76,6 +76,15 @@ function getTierLabel(tier) {
   return '✅ ปกติ';
 }
 
+async function savePrevStock(sheets, rowIndex, stock) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: `Stock_วัตถุดิบ!P${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[stock]] }
+  });
+}
+
 async function updateStatus(sheets, rowIndex, queue, status) {
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
@@ -98,7 +107,7 @@ async function checkAllStock() {
   const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: 'Stock_วัตถุดิบ!A6:O200',
+    range: 'Stock_วัตถุดิบ!A6:P200',
   });
 
   const rows = res.data.values || [];
@@ -129,11 +138,18 @@ async function checkAllStock() {
     const actualRow = i + 6;
 
     const tier = getTier(stock, t1l, t2l, t3l);
+    const prevStock = parseFloat(row[C.PREV_STOCK-1]) || 0;
 
-    // รีเซ็ต status ถ้า Stock กลับมาปกติ
-    if (tier === 0 && status === '⏳ รอของ') {
+    // รีเซ็ต ถ้า Stock เพิ่มขึ้นจากชั่วโมงก่อน = ของมาแล้ว
+    if (status === '⏳ รอของ' && stock > prevStock) {
       await updateStatus(sheets, actualRow, lastQ, '✅ ปกติ');
+      await savePrevStock(sheets, actualRow, stock);
       continue;
+    }
+
+    // บันทึก Stock ปัจจุบันไว้เปรียบเทียบชั่วโมงหน้า
+    if (stock !== prevStock) {
+      await savePrevStock(sheets, actualRow, stock);
     }
 
     // ข้ามถ้าปกติหรือรอของอยู่
@@ -170,7 +186,7 @@ async function checkAllStock() {
   for (const key of Object.keys(supplierMap)) {
     const { supName, supGroupId, targetQueue, items } = supplierMap[key];
 
-    // ต้องมีอย่างน้อย 1 item ที่เป็น Tier 2 หรือ 3 เพื่อ trigger
+    // Tier 2 ขึ้นไป = trigger ส่ง, Tier 1 = พ่วงอย่างเดียว
     const hasTrigger = items.some(it => it.tier >= 2);
     if (!hasTrigger) continue;
 
