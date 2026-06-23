@@ -200,7 +200,7 @@ async function checkAllStock() {
     });
 
     const orderMsg =
-      `📋 ใบสั่งซื้อวัตถุดิบ\n` +
+      `📋 สั่งซื้อวัตถุดิบ\n` +
       `🏭 ${FACTORY}\n` +
       `🕐 ${now}\n` +
       `${'─'.repeat(28)}\n` +
