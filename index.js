@@ -195,12 +195,12 @@ async function checkAllStock() {
     items.forEach(it => {
       itemLines +=
         `\n▪️ ${it.name}\n` +
-        `   สั่ง: ${it.orderQty} ${it.unit} ${getTierLabel(it.tier)}\n` +
+        `   สั่ง: ${it.orderQty} ${it.unit}\n` +
         `   Stock เหลือ: ${it.stock} ${it.unit}\n`;
     });
 
     const orderMsg =
-      `📋 สั่งซื้อวัตถุดิบ\n` +
+      `📋 ใบสั่งซื้อวัตถุดิบ\n` +
       `🏭 ${FACTORY}\n` +
       `🕐 ${now}\n` +
       `${'─'.repeat(28)}\n` +
