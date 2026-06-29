@@ -316,8 +316,6 @@ input:focus{outline:none;border-color:#185FA5}
 .btn{width:100%;padding:18px;font-size:17px;font-weight:700;background:#185FA5;color:#fff;border:none;border-radius:14px;cursor:pointer}
 .btn:active{opacity:0.85}
 .btn:disabled{background:#aaa}
-.btn-check{width:100%;padding:14px;font-size:15px;font-weight:600;background:#fff;color:#185FA5;border:2px solid #185FA5;border-radius:14px;cursor:pointer;margin-top:10px}
-.btn-check:active{opacity:0.85}
 .err-msg{color:#E24B4A;font-size:13px;text-align:center;margin-bottom:8px;display:none}
 .ok{background:#EAF3DE;border-radius:14px;padding:24px;text-align:center;margin-top:16px;display:none}
 .ok p{font-size:18px;font-weight:700;color:#3B6D11}
@@ -333,15 +331,11 @@ input:focus{outline:none;border-color:#185FA5}
 <div class="btn-wrap">
   <div class="loading" id="loading">กำลังบันทึก...</div>
   <button class="btn" id="btn" onclick="submitAll()">บันทึก Stock ทั้งหมด</button>
-  <button class="btn-check" id="btn-check" onclick="manualCheck()">ตรวจ Stock ทันที</button>
+
 </div>
 <div class="ok" id="ok">
   <p>บันทึกสำเร็จแล้ว!</p>
   <small id="ok-detail"></small>
-</div>
-<div class="ok" id="ok-check" style="display:none;background:#E6F1FB;border-radius:14px;padding:20px;text-align:center;margin-top:12px">
-  <p style="color:#185FA5">กำลังตรวจ Stock...</p>
-  <small id="check-detail" style="color:#378ADD"></small>
 </div>
 <script>
 const items = ${itemsJson};
@@ -359,24 +353,6 @@ items.forEach((it,i) => {
 function clearErr(i){
   document.getElementById('row'+i).classList.remove('missing');
   document.getElementById('errmsg').style.display='none';
-}
-
-async function manualCheck(){
-  const btn = document.getElementById('btn-check');
-  btn.disabled = true;
-  btn.textContent = 'กำลังตรวจ...';
-  document.getElementById('ok-check').style.display = 'block';
-  document.getElementById('check-detail').textContent = 'รอสักครู่...';
-  try {
-    const res = await fetch('/check');
-    const data = await res.json();
-    document.getElementById('check-detail').textContent = 
-      data.ordered > 0 ? 'สั่งซื้อ '+data.ordered+' รายการแล้ว!' : 'Stock ปกติทุกรายการ';
-  } catch(e) {
-    document.getElementById('check-detail').textContent = 'เกิดข้อผิดพลาด ลองใหม่';
-  }
-  btn.disabled = false;
-  btn.textContent = 'ตรวจ Stock ทันที';
 }
 
 async function submitAll(){
