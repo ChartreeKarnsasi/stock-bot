@@ -1,11 +1,12 @@
 const express = require('express');
 const axios = require('axios');
 const { google } = require('googleapis');
-const cron = require('node-cron');
+
 const app = express();
 app.use(express.json());
 
 const LINE_TOKEN = process.env.LINE_TOKEN;
+let checkTimer = null;
 const SHEET_ID   = process.env.SHEET_ID;
 const FACTORY    = process.env.FACTORY_NAME || "โรงงาน";
 
@@ -277,17 +278,9 @@ app.get('/check', async (req,res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Stock Bot v3 running on port ${PORT}`));
 
-// ตรวจ Stock ทุก 1 ชั่วโมง
-cron.schedule('0 * * * *', async () => {
-  console.log('Auto check stock...');
-  try {
-    const result = await checkAllStock();
-    console.log('Done:', result);
-  } catch(e) { console.error('Auto check error:', e.message); }
-}, { timezone:'Asia/Bangkok' });
 
 // ============================================================
-//  หน้ากรอก Stock บน Tablet
+//  หน้ากรอก Stock บน Tablet — กรอกครบแล้วกดบันทึกทีเดียว
 // ============================================================
 app.get('/stock', async (req, res) => {
   try {
@@ -298,6 +291,7 @@ app.get('/stock', async (req, res) => {
     });
     const rows = (result.data.values || []).filter(r => r[0]);
     const items = rows.map(r => ({ name: r[0], unit: r[2] || '' }));
+    const itemsJson = JSON.stringify(items);
 
     res.send(`<!DOCTYPE html>
 <html lang="th">
@@ -307,78 +301,92 @@ app.get('/stock', async (req, res) => {
 <title>กรอก Stock</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:sans-serif;background:#f5f5f5;padding:16px}
-h1{font-size:20px;font-weight:600;margin-bottom:4px;color:#1E3A5F}
-.sub{font-size:13px;color:#888;margin-bottom:16px}
-.progress{height:8px;background:#ddd;border-radius:4px;margin-bottom:8px;overflow:hidden}
-.progress-fill{height:100%;background:#639922;border-radius:4px;transition:width 0.3s}
-.progress-text{font-size:12px;color:#888;text-align:right;margin-bottom:16px}
-.item{background:#fff;border-radius:10px;padding:12px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;border:1px solid #eee}
-.item.done{border-color:#97C459;background:#EAF3DE}
-.num{width:28px;height:28px;border-radius:50%;background:#eee;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#888;flex-shrink:0}
-.item.done .num{background:#639922;color:#fff}
-.name{flex:1;font-size:15px;font-weight:500;color:#222}
-.unit{font-size:12px;color:#999}
-input[type=number]{width:80px;padding:8px;font-size:16px;font-weight:600;border:1px solid #ddd;border-radius:8px;text-align:center}
-.val{font-size:16px;font-weight:600;color:#3B6D11;min-width:70px;text-align:right}
-.btn{width:100%;padding:16px;font-size:16px;font-weight:600;background:#185FA5;color:#fff;border:none;border-radius:12px;margin-top:16px;display:none}
-.ok{background:#EAF3DE;border-radius:12px;padding:20px;text-align:center;display:none;margin-top:16px}
-.ok p{font-size:16px;font-weight:600;color:#3B6D11}
+body{font-family:sans-serif;background:#f0f2f5;padding:16px 12px}
+h1{font-size:22px;font-weight:700;color:#1E3A5F;margin-bottom:2px}
+.date{font-size:13px;color:#888;margin-bottom:20px}
+.item{background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;border:1.5px solid #eee}
+.item.missing{border-color:#E24B4A}
+.num{width:30px;height:30px;border-radius:50%;background:#f0f2f5;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#888;flex-shrink:0}
+.name{flex:1}
+.name p{font-size:15px;font-weight:600;color:#222;margin-bottom:1px}
+.name small{font-size:12px;color:#aaa}
+input{width:90px;padding:10px 8px;font-size:18px;font-weight:700;border:1.5px solid #ddd;border-radius:10px;text-align:center;color:#1E3A5F;background:#f8f9ff}
+input:focus{outline:none;border-color:#185FA5}
+.btn-wrap{position:sticky;bottom:0;background:#f0f2f5;padding:12px 0 4px}
+.btn{width:100%;padding:18px;font-size:17px;font-weight:700;background:#185FA5;color:#fff;border:none;border-radius:14px;cursor:pointer}
+.btn:active{opacity:0.85}
+.btn:disabled{background:#aaa}
+.err-msg{color:#E24B4A;font-size:13px;text-align:center;margin-bottom:8px;display:none}
+.ok{background:#EAF3DE;border-radius:14px;padding:24px;text-align:center;margin-top:16px;display:none}
+.ok p{font-size:18px;font-weight:700;color:#3B6D11}
+.ok small{font-size:13px;color:#639922}
+.loading{text-align:center;padding:12px;font-size:14px;color:#888;display:none}
 </style>
 </head>
 <body>
 <h1>กรอก Stock วันนี้</h1>
-<div class="sub" id="dt"></div>
-<div class="progress"><div class="progress-fill" id="pf" style="width:0%"></div></div>
-<div class="progress-text"><span id="dc">0</span>/${items.length} รายการ</div>
+<div class="date" id="dt"></div>
 <div id="list"></div>
-<button class="btn" id="btn" onclick="submit()">บันทึกทั้งหมด</button>
-<div class="ok" id="ok"><p>บันทึกสำเร็จ!</p></div>
+<div class="err-msg" id="errmsg">กรุณากรอกให้ครบทุกช่อง</div>
+<div class="btn-wrap">
+  <div class="loading" id="loading">กำลังบันทึก...</div>
+  <button class="btn" id="btn" onclick="submitAll()">บันทึก Stock ทั้งหมด</button>
+</div>
+<div class="ok" id="ok">
+  <p>บันทึกสำเร็จแล้ว!</p>
+  <small id="ok-detail"></small>
+</div>
 <script>
-const items = ${JSON.stringify(items)};
-const vals = new Array(items.length).fill(null);
-let done = 0;
-
+const items = ${itemsJson};
 document.getElementById('dt').textContent = new Date().toLocaleDateString('th-TH',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
 
-function render(){
-  const list = document.getElementById('list');
-  list.innerHTML = '';
-  items.forEach((it,i)=>{
-    const div = document.createElement('div');
-    div.className = 'item' + (vals[i]!==null?' done':'');
-    div.innerHTML = vals[i]!==null
-      ? \`<div class="num">✓</div><div style="flex:1"><div class="name">\${it.name}</div><div class="unit">\${it.unit}</div></div><div class="val">\${vals[i]} \${it.unit}</div>\`
-      : \`<div class="num">\${i+1}</div><div style="flex:1"><div class="name">\${it.name}</div><div class="unit">\${it.unit}</div></div><input type="number" inputmode="numeric" id="inp\${i}" placeholder="0" onkeydown="if(event.key==='Enter'){save(\${i})}" />\`;
-    list.appendChild(div);
+const list = document.getElementById('list');
+items.forEach((it,i) => {
+  const div = document.createElement('div');
+  div.className = 'item';
+  div.id = 'row'+i;
+  div.innerHTML = '<div class="num">'+(i+1)+'</div><div class="name"><p>'+it.name+'</p><small>หน่วย: '+it.unit+'</small></div><input type="number" inputmode="decimal" id="inp'+i+'" placeholder="0" min="0" oninput="clearErr('+i+')">';
+  list.appendChild(div);
+});
+
+function clearErr(i){
+  document.getElementById('row'+i).classList.remove('missing');
+  document.getElementById('errmsg').style.display='none';
+}
+
+async function submitAll(){
+  let missing = false;
+  const body = items.map((it,i) => {
+    const v = document.getElementById('inp'+i).value.trim();
+    if(!v || isNaN(v)){
+      document.getElementById('row'+i).classList.add('missing');
+      missing = true;
+      return null;
+    }
+    return {name:it.name, unit:it.unit, stock:parseFloat(v)};
   });
-  const pct = Math.round(done/items.length*100);
-  document.getElementById('pf').style.width = pct+'%';
-  document.getElementById('dc').textContent = done;
-  if(done===items.length) document.getElementById('btn').style.display='block';
-  if(vals[0]===null) setTimeout(()=>{const el=document.getElementById('inp0');if(el)el.focus();},100);
-}
 
-function save(i){
-  const inp = document.getElementById('inp'+i);
-  if(!inp) return;
-  const v = inp.value.trim();
-  if(!v || isNaN(v)) { inp.style.border='1px solid red'; inp.focus(); return; }
-  vals[i] = parseFloat(v);
-  done++;
-  render();
-  const next = vals.findIndex((v,idx)=>idx>i&&v===null);
-  if(next>=0) setTimeout(()=>{const el=document.getElementById('inp'+next);if(el){el.focus();el.scrollIntoView({behavior:'smooth',block:'center'});}},100);
-}
+  if(missing){
+    document.getElementById('errmsg').style.display='block';
+    document.querySelector('.missing input').focus();
+    document.querySelector('.missing').scrollIntoView({behavior:'smooth',block:'center'});
+    return;
+  }
 
-async function submit(){
-  document.getElementById('btn').style.display='none';
-  const body = items.map((it,i)=>({name:it.name,unit:it.unit,stock:vals[i]}));
-  const res = await fetch('/stock', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(res.ok){ document.getElementById('ok').style.display='block'; }
-}
+  document.getElementById('btn').disabled = true;
+  document.getElementById('loading').style.display='block';
 
-render();
+  const res = await fetch('/stock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  document.getElementById('loading').style.display='none';
+  if(res.ok){
+    document.getElementById('btn').style.display='none';
+    document.getElementById('ok').style.display='block';
+    document.getElementById('ok-detail').textContent = 'บันทึก '+items.length+' รายการ เวลา '+new Date().toLocaleTimeString('th-TH');
+  } else {
+    document.getElementById('btn').disabled=false;
+    alert('เกิดข้อผิดพลาด กรุณาลองใหม่');
+  }
+}
 </script>
 </body>
 </html>`);
@@ -408,8 +416,18 @@ app.post('/stock', async (req, res) => {
         });
       }
     }
-    await checkAllStock();
     res.json({ status: 'ok' });
+    if (checkTimer) {
+      clearTimeout(checkTimer);
+      console.log('Previous check cancelled, resetting 30min timer...');
+    }
+    checkTimer = setTimeout(async () => {
+      checkTimer = null;
+      try {
+        console.log('Running stock check 30 min after form submit...');
+        await checkAllStock();
+      } catch(e) { console.error('Delayed check error:', e.message); }
+    }, 30 * 60 * 1000);
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
