@@ -200,7 +200,7 @@ async function checkAllStock() {
     });
 
     const orderMsg =
-      `📋 สั่งซื้อวัตถุดิบ\n` +
+      `📋 ใบสั่งซื้อวัตถุดิบ\n` +
       `🏭 ${FACTORY}\n` +
       `🕐 ${now}\n` +
       `${'─'.repeat(28)}\n` +
@@ -285,3 +285,132 @@ cron.schedule('0 * * * *', async () => {
     console.log('Done:', result);
   } catch(e) { console.error('Auto check error:', e.message); }
 }, { timezone:'Asia/Bangkok' });
+
+// ============================================================
+//  หน้ากรอก Stock บน Tablet
+// ============================================================
+app.get('/stock', async (req, res) => {
+  try {
+    const sheets = await getSheets();
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: 'Stock_วัตถุดิบ!B6:D200',
+    });
+    const rows = (result.data.values || []).filter(r => r[0]);
+    const items = rows.map(r => ({ name: r[0], unit: r[2] || '' }));
+
+    res.send(`<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>กรอก Stock</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:sans-serif;background:#f5f5f5;padding:16px}
+h1{font-size:20px;font-weight:600;margin-bottom:4px;color:#1E3A5F}
+.sub{font-size:13px;color:#888;margin-bottom:16px}
+.progress{height:8px;background:#ddd;border-radius:4px;margin-bottom:8px;overflow:hidden}
+.progress-fill{height:100%;background:#639922;border-radius:4px;transition:width 0.3s}
+.progress-text{font-size:12px;color:#888;text-align:right;margin-bottom:16px}
+.item{background:#fff;border-radius:10px;padding:12px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px;border:1px solid #eee}
+.item.done{border-color:#97C459;background:#EAF3DE}
+.num{width:28px;height:28px;border-radius:50%;background:#eee;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#888;flex-shrink:0}
+.item.done .num{background:#639922;color:#fff}
+.name{flex:1;font-size:15px;font-weight:500;color:#222}
+.unit{font-size:12px;color:#999}
+input[type=number]{width:80px;padding:8px;font-size:16px;font-weight:600;border:1px solid #ddd;border-radius:8px;text-align:center}
+.val{font-size:16px;font-weight:600;color:#3B6D11;min-width:70px;text-align:right}
+.btn{width:100%;padding:16px;font-size:16px;font-weight:600;background:#185FA5;color:#fff;border:none;border-radius:12px;margin-top:16px;display:none}
+.ok{background:#EAF3DE;border-radius:12px;padding:20px;text-align:center;display:none;margin-top:16px}
+.ok p{font-size:16px;font-weight:600;color:#3B6D11}
+</style>
+</head>
+<body>
+<h1>กรอก Stock วันนี้</h1>
+<div class="sub" id="dt"></div>
+<div class="progress"><div class="progress-fill" id="pf" style="width:0%"></div></div>
+<div class="progress-text"><span id="dc">0</span>/${items.length} รายการ</div>
+<div id="list"></div>
+<button class="btn" id="btn" onclick="submit()">บันทึกทั้งหมด</button>
+<div class="ok" id="ok"><p>บันทึกสำเร็จ!</p></div>
+<script>
+const items = ${JSON.stringify(items)};
+const vals = new Array(items.length).fill(null);
+let done = 0;
+
+document.getElementById('dt').textContent = new Date().toLocaleDateString('th-TH',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+
+function render(){
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+  items.forEach((it,i)=>{
+    const div = document.createElement('div');
+    div.className = 'item' + (vals[i]!==null?' done':'');
+    div.innerHTML = vals[i]!==null
+      ? \`<div class="num">✓</div><div style="flex:1"><div class="name">\${it.name}</div><div class="unit">\${it.unit}</div></div><div class="val">\${vals[i]} \${it.unit}</div>\`
+      : \`<div class="num">\${i+1}</div><div style="flex:1"><div class="name">\${it.name}</div><div class="unit">\${it.unit}</div></div><input type="number" inputmode="numeric" id="inp\${i}" placeholder="0" onkeydown="if(event.key==='Enter'){save(\${i})}" />\`;
+    list.appendChild(div);
+  });
+  const pct = Math.round(done/items.length*100);
+  document.getElementById('pf').style.width = pct+'%';
+  document.getElementById('dc').textContent = done;
+  if(done===items.length) document.getElementById('btn').style.display='block';
+  if(vals[0]===null) setTimeout(()=>{const el=document.getElementById('inp0');if(el)el.focus();},100);
+}
+
+function save(i){
+  const inp = document.getElementById('inp'+i);
+  if(!inp) return;
+  const v = inp.value.trim();
+  if(!v || isNaN(v)) { inp.style.border='1px solid red'; inp.focus(); return; }
+  vals[i] = parseFloat(v);
+  done++;
+  render();
+  const next = vals.findIndex((v,idx)=>idx>i&&v===null);
+  if(next>=0) setTimeout(()=>{const el=document.getElementById('inp'+next);if(el){el.focus();el.scrollIntoView({behavior:'smooth',block:'center'});}},100);
+}
+
+async function submit(){
+  document.getElementById('btn').style.display='none';
+  const body = items.map((it,i)=>({name:it.name,unit:it.unit,stock:vals[i]}));
+  const res = await fetch('/stock', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(res.ok){ document.getElementById('ok').style.display='block'; }
+}
+
+render();
+</script>
+</body>
+</html>`);
+  } catch(e) {
+    res.status(500).send('เกิดข้อผิดพลาด: ' + e.message);
+  }
+});
+
+// รับข้อมูลจากฟอร์ม tablet อัพเดท Sheet
+app.post('/stock', async (req, res) => {
+  try {
+    const sheets = await getSheets();
+    const items = req.body;
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: 'Stock_วัตถุดิบ!B6:B200',
+    });
+    const names = (result.data.values || []).map(r => r[0]);
+    for (const item of items) {
+      const idx = names.findIndex(n => n === item.name);
+      if (idx >= 0) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SHEET_ID,
+          range: `Stock_วัตถุดิบ!D${idx + 6}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [[item.stock]] }
+        });
+      }
+    }
+    await checkAllStock();
+    res.json({ status: 'ok' });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
